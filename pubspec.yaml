@@ -1,9 +1,9 @@
 name: liquid_glass_switch
 description: A liquid glass switch widget with spring interactions and shader-based refraction.
-version: 0.1.0
-homepage: https://github.com/example/liquid_glass_switch
-repository: https://github.com/example/liquid_glass_switch
-issue_tracker: https://github.com/example/liquid_glass_switch/issues
+version: 1.0.0
+homepage: https://github.com/Abdualsslam/liquid_glass_switch
+repository: https://github.com/Abdualsslam/liquid_glass_switch
+issue_tracker: https://github.com/Abdualsslam/liquid_glass_switch/issues
 topics:
   - flutter
   - switch

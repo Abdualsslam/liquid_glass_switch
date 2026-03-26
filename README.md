@@ -1,28 +1,26 @@
 # liquid_glass_switch
 
-A reusable Flutter switch widget with a liquid-glass look, spring motion, and shader-based refraction.
+A Flutter switch component with a dark/light liquid-glass style, shader-based refraction, spring interaction, and a full style-object API.
 
 ## Features
 
-- Controlled API (`value` + `onChanged`)
-- Drag and tap interaction
-- Configurable faces (`label`, `icon`, `tint`)
-- Configurable motion (`spring`, `duration`, `flickThreshold`)
-- Built-in accessibility semantics
-- Includes an `example/` app
-
-## Preview
-
-![Example background](example/assets/image.png)
+- Controlled state with `LiquidGlassSwitchValue.light` / `LiquidGlassSwitchValue.dark`
+- Drag and tap interactions with spring physics
+- Edge rebound (bounce) for orb settle to mimic reference motion
+- Style-object customization for geometry, track, orb, glass controls, and typography
+- Per-state content (`label`, `icon`, `tint`, `iconGlow`)
+- Optional `onPositionChanged` callback to drive external animations (for example: background transitions)
+- Shader fallback path when runtime shader loading is unavailable
+- Example app with the final dark/light visual style
 
 ## Installation
 
 ```yaml
 dependencies:
-  liquid_glass_switch: ^0.1.0
+  liquid_glass_switch: ^1.0.0
 ```
 
-## Usage
+## Quick start
 
 ```dart
 import 'package:flutter/material.dart';
@@ -36,45 +34,73 @@ class Demo extends StatefulWidget {
 }
 
 class _DemoState extends State<Demo> {
-  bool isSleep = true;
+  LiquidGlassSwitchValue value = LiquidGlassSwitchValue.dark;
 
   @override
   Widget build(BuildContext context) {
     return Center(
       child: LiquidGlassSwitch(
-        value: isSleep,
-        onChanged: (value) => setState(() => isSleep = value),
-        leftFace: const LiquidGlassSwitchFace(
-          label: 'Work',
-          icon: Icons.person_rounded,
-          tint: Color(0xFFFFD45F),
-        ),
-        rightFace: const LiquidGlassSwitchFace(
-          label: 'Sleep',
-          icon: Icons.nightlight_round,
-          tint: Color(0xFF8B8EFF),
-        ),
+        value: value,
+        onChanged: (next) => setState(() => value = next),
       ),
     );
   }
 }
 ```
 
-## API
+## Custom content and style
 
-- `LiquidGlassSwitch`
-  - `value` (required)
-  - `onChanged` (required)
-  - `leftFace`, `rightFace`
-  - `width`, `enabled`, `motion`
-- `LiquidGlassSwitchFace`
-  - `label`, `icon`, `tint`
-- `LiquidGlassSwitchMotion`
-  - `spring`, `duration`, `flickThreshold`
+```dart
+LiquidGlassSwitch(
+  value: value,
+  onChanged: (next) => setState(() => value = next),
+  onPositionChanged: (progress) {
+    // progress: 0.0 (light/left) -> 1.0 (dark/right)
+  },
+  content: const LiquidGlassSwitchContent(
+    left: LiquidGlassStateContent(
+      label: 'Light',
+      icon: Icons.light_mode_rounded,
+      tint: Color(0xFF8AAED9),
+    ),
+    right: LiquidGlassStateContent(
+      label: 'Dark',
+      icon: Icons.dark_mode_rounded,
+      tint: Color(0xFF4F648A),
+    ),
+  ),
+  style: const LiquidGlassSwitchStyle(
+    geometry: LiquidGlassGeometryStyle(
+      width: 260,
+      trackHeight: 96,
+      orbSize: 136,
+      orbOverflow: 16,
+    ),
+    glass: LiquidGlassGlassStyle(
+      refraction: 100,
+      depth: 50,
+      dispersion: 100,
+      frost: 0,
+      lightAngle: -45,
+      lightIntensity: 100,
+    ),
+  ),
+  motion: const LiquidGlassSwitchMotion(
+    bounceAmplitude: 12,
+    bounceCycles: 2,
+    bounceDamping: 3.4,
+  ),
+)
+```
 
-## Example app
+## Migration from <= 0.1.x
 
-Run the demo:
+- `bool value` -> `LiquidGlassSwitchValue value`
+- `ValueChanged<bool>` -> `ValueChanged<LiquidGlassSwitchValue>`
+- `leftFace/rightFace` -> `content.left/content.right` via `LiquidGlassSwitchContent`
+- Visual configuration moved to `LiquidGlassSwitchStyle` and nested style objects
+
+## Run example
 
 ```bash
 cd example

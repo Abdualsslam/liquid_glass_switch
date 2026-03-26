@@ -5,6 +5,7 @@ void main() {
   testWidgets('example app renders liquid glass switch', (tester) async {
     await tester.pumpWidget(const LiquidGlassSwitchExampleApp());
 
-    expect(find.text('Sleep'), findsOneWidget);
+    expect(find.text('نهار'), findsOneWidget);
+    expect(find.text('ليل'), findsOneWidget);
   });
 }

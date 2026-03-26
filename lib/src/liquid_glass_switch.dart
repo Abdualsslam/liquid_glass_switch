@@ -1,100 +1,62 @@
+import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
 
-const double _defaultWidth = 200.0;
-const double _trackHeight = 58.0;
-const double _orbSize = 82.0;
-const double _switchHeight = 104.0;
-
-const String _packageShaderAsset =
-    'packages/liquid_glass_switch/shaders/liquid_glass.frag';
-const String _localShaderAsset = 'shaders/liquid_glass.frag';
-
-@immutable
-class LiquidGlassSwitchFace {
-  const LiquidGlassSwitchFace({
-    required this.label,
-    required this.icon,
-    required this.tint,
-  });
-
-  final String label;
-  final IconData icon;
-  final Color tint;
-
-  static const LiquidGlassSwitchFace work = LiquidGlassSwitchFace(
-    label: 'Work',
-    icon: Icons.person_rounded,
-    tint: Color(0xFFFFD45F),
-  );
-
-  static const LiquidGlassSwitchFace sleep = LiquidGlassSwitchFace(
-    label: 'Sleep',
-    icon: Icons.nightlight_round,
-    tint: Color(0xFF8B8EFF),
-  );
-}
-
-@immutable
-class LiquidGlassSwitchMotion {
-  const LiquidGlassSwitchMotion({
-    this.spring = const SpringDescription(
-      mass: 1.0,
-      stiffness: 300.0,
-      damping: 18.0,
-    ),
-    this.flickThreshold = 1.5,
-    this.duration = const Duration(milliseconds: 220),
-  }) : assert(flickThreshold >= 0);
-
-  final SpringDescription spring;
-  final double flickThreshold;
-  final Duration duration;
-}
+part 'liquid_glass_switch_models.dart';
+part 'liquid_glass_switch_rendering.dart';
 
 class LiquidGlassSwitch extends StatefulWidget {
   const LiquidGlassSwitch({
     super.key,
     required this.value,
     required this.onChanged,
-    this.leftFace = LiquidGlassSwitchFace.work,
-    this.rightFace = LiquidGlassSwitchFace.sleep,
-    this.width = _defaultWidth,
-    this.enabled = true,
+    this.content = const LiquidGlassSwitchContent.darkLight(),
+    this.style = const LiquidGlassSwitchStyle(),
     this.motion = const LiquidGlassSwitchMotion(),
-  }) : assert(width > _orbSize);
+    this.enabled = true,
+    this.onPositionChanged,
+  });
 
-  final bool value;
-  final ValueChanged<bool> onChanged;
-  final LiquidGlassSwitchFace leftFace;
-  final LiquidGlassSwitchFace rightFace;
-  final double width;
-  final bool enabled;
+  final LiquidGlassSwitchValue value;
+  final ValueChanged<LiquidGlassSwitchValue> onChanged;
+  final LiquidGlassSwitchContent content;
+  final LiquidGlassSwitchStyle style;
   final LiquidGlassSwitchMotion motion;
+  final bool enabled;
+  final ValueChanged<double>? onPositionChanged;
 
   @override
   State<LiquidGlassSwitch> createState() => _LiquidGlassSwitchState();
 }
 
 class _LiquidGlassSwitchState extends State<LiquidGlassSwitch>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   static Future<FragmentProgram?>? _programFuture;
 
   late final AnimationController _controller;
-  FragmentShader? _trackShader;
+  late final AnimationController _bounceController;
   FragmentShader? _orbShader;
+  double _bounceDirection = 1.0;
+  double _bounceVelocityBoost = 0.0;
+  double _lastReportedProgress = 0.0;
 
-  double get _draggableDistance => widget.width - _orbSize;
+  LiquidGlassGeometryStyle get _geometry => widget.style.geometry;
 
   @override
   void initState() {
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      value: _valueToController(widget.value),
-      duration: widget.motion.duration,
+      value: _valueToUnit(widget.value),
+      duration: widget.motion.animationDuration,
+    );
+    _lastReportedProgress = _controller.value.clamp(0.0, 1.0);
+    _controller.addListener(_reportProgress);
+    _bounceController = AnimationController(
+      vsync: this,
+      duration: widget.motion.bounceDuration,
     );
     _loadShader();
   }
@@ -102,25 +64,39 @@ class _LiquidGlassSwitchState extends State<LiquidGlassSwitch>
   @override
   void didUpdateWidget(covariant LiquidGlassSwitch oldWidget) {
     super.didUpdateWidget(oldWidget);
-
-    if (oldWidget.motion.duration != widget.motion.duration) {
-      _controller.duration = widget.motion.duration;
+    if (oldWidget.motion.animationDuration != widget.motion.animationDuration) {
+      _controller.duration = widget.motion.animationDuration;
+    }
+    if (oldWidget.motion.bounceDuration != widget.motion.bounceDuration) {
+      _bounceController.duration = widget.motion.bounceDuration;
     }
 
     if (oldWidget.value != widget.value) {
-      _controller.animateTo(
-        _valueToController(widget.value),
-        duration: widget.motion.duration,
-        curve: Curves.easeOutCubic,
-      );
+      final target = _valueToUnit(widget.value);
+      if ((_controller.value - target).abs() > 0.001) {
+        _animateWithSpring(target, 0.0);
+      } else {
+        _controller.value = target;
+      }
+    }
+
+    if (oldWidget.onPositionChanged != widget.onPositionChanged) {
+      _reportProgress(force: true);
     }
   }
 
   @override
   void dispose() {
+    _controller.removeListener(_reportProgress);
+    _bounceController.dispose();
     _controller.dispose();
     super.dispose();
   }
+
+  double get _orbStartX => 0.0;
+  double get _orbEndX =>
+      _geometry.trackWidth - _geometry.orbWidth + (_geometry.orbOverflow * 2);
+  double get _draggableDistance => math.max(_orbEndX - _orbStartX, 1.0);
 
   Future<void> _loadShader() async {
     final program = await (_programFuture ??= _resolveProgram());
@@ -129,7 +105,6 @@ class _LiquidGlassSwitchState extends State<LiquidGlassSwitch>
     }
 
     setState(() {
-      _trackShader = program.fragmentShader();
       _orbShader = program.fragmentShader();
     });
   }
@@ -146,16 +121,119 @@ class _LiquidGlassSwitchState extends State<LiquidGlassSwitch>
     }
   }
 
-  static double _valueToController(bool value) => value ? 1.0 : 0.0;
+  static double _valueToUnit(LiquidGlassSwitchValue value) =>
+      value == LiquidGlassSwitchValue.dark ? 1.0 : 0.0;
+
+  static LiquidGlassSwitchValue _unitToValue(double value) =>
+      value >= 0.5 ? LiquidGlassSwitchValue.dark : LiquidGlassSwitchValue.light;
+
+  LiquidGlassStateContent _contentFromUnit(double value) =>
+      value >= 0.5 ? widget.content.right : widget.content.left;
+
+  void _reportProgress({bool force = false}) {
+    final callback = widget.onPositionChanged;
+    if (callback == null) {
+      return;
+    }
+
+    final progress = _controller.value.clamp(0.0, 1.0);
+    if (force || (progress - _lastReportedProgress).abs() > 0.0005) {
+      _lastReportedProgress = progress;
+      callback(progress);
+    }
+  }
+
+  void _startBounce({required double direction, required double velocity}) {
+    _bounceDirection = direction;
+    _bounceVelocityBoost = (velocity.abs() * 0.32).clamp(0.0, 0.42);
+    _bounceController
+      ..stop()
+      ..value = 0.0
+      ..forward();
+  }
+
+  double _bounceOffset(double baseProgress) {
+    if (_bounceController.value <= 0) {
+      return 0.0;
+    }
+
+    final edgeDistance = math.min(baseProgress, 1.0 - baseProgress);
+    final edgeFactor = (1.0 - (edgeDistance / 0.2)).clamp(0.0, 1.0);
+    if (edgeFactor <= 0) {
+      return 0.0;
+    }
+
+    final t = _bounceController.value;
+    final wave = math.sin(t * math.pi * widget.motion.bounceCycles);
+    final envelope = math.exp(-widget.motion.bounceDamping * t);
+    final amplitude =
+        widget.motion.bounceAmplitude *
+        (1.0 + _bounceVelocityBoost) *
+        edgeFactor;
+    return _bounceDirection * wave * envelope * amplitude;
+  }
 
   void _animateWithSpring(double target, double velocity) {
+    final start = _controller.value;
+    if ((start - target).abs() <= 0.001) {
+      _controller.value = target;
+      return;
+    }
+
+    final movingForward = target > start;
     final simulation = SpringSimulation(
       widget.motion.spring,
-      _controller.value,
+      start,
       target,
       velocity,
     );
-    _controller.animateWith(simulation);
+    var clampedAtTarget = false;
+    late VoidCallback clampListener;
+    clampListener = () {
+      if (clampedAtTarget) {
+        return;
+      }
+
+      final reachedTarget = movingForward
+          ? _controller.value >= target
+          : _controller.value <= target;
+      if (!reachedTarget) {
+        return;
+      }
+
+      clampedAtTarget = true;
+      _controller.removeListener(clampListener);
+      _controller
+        ..stop()
+        ..value = target;
+      _startBounce(direction: target >= 0.5 ? 1.0 : -1.0, velocity: velocity);
+    };
+
+    _controller.addListener(clampListener);
+    _controller.animateWith(simulation).whenCompleteOrCancel(() {
+      _controller.removeListener(clampListener);
+      if (!mounted) {
+        return;
+      }
+      if (clampedAtTarget) {
+        return;
+      }
+      final atTarget = (_controller.value - target).abs() <= 0.06;
+      if (atTarget) {
+        _controller.value = target;
+        _startBounce(direction: target >= 0.5 ? 1.0 : -1.0, velocity: velocity);
+      }
+    });
+  }
+
+  void _onPanStart(DragStartDetails details) {
+    if (!widget.enabled) {
+      return;
+    }
+    _bounceVelocityBoost = 0.0;
+    _bounceController
+      ..stop()
+      ..value = 0.0;
   }
 
   void _onPanUpdate(DragUpdateDetails details) {
@@ -173,16 +251,15 @@ class _LiquidGlassSwitchState extends State<LiquidGlassSwitch>
       return;
     }
 
-    final dragVelocity = (details.primaryVelocity ?? 0.0) / _draggableDistance;
-    final target = dragVelocity.abs() > widget.motion.flickThreshold
-        ? (dragVelocity > 0 ? 1.0 : 0.0)
+    final velocity = (details.primaryVelocity ?? 0.0) / _draggableDistance;
+    final target = velocity.abs() > widget.motion.flickThreshold
+        ? (velocity > 0 ? 1.0 : 0.0)
         : (_controller.value > 0.5 ? 1.0 : 0.0);
 
-    _animateWithSpring(target, dragVelocity);
-
-    final nextValue = target >= 0.5;
-    if (nextValue != widget.value) {
-      widget.onChanged(nextValue);
+    _animateWithSpring(target, velocity);
+    final targetValue = _unitToValue(target);
+    if (targetValue != widget.value) {
+      widget.onChanged(targetValue);
     }
   }
 
@@ -191,9 +268,12 @@ class _LiquidGlassSwitchState extends State<LiquidGlassSwitch>
       return;
     }
 
-    final nextValue = !widget.value;
-    _animateWithSpring(_valueToController(nextValue), 0.0);
-    widget.onChanged(nextValue);
+    final targetValue = widget.value == LiquidGlassSwitchValue.dark
+        ? LiquidGlassSwitchValue.light
+        : LiquidGlassSwitchValue.dark;
+    _bounceVelocityBoost = 0.0;
+    _animateWithSpring(_valueToUnit(targetValue), 0.0);
+    widget.onChanged(targetValue);
   }
 
   @override
@@ -201,120 +281,175 @@ class _LiquidGlassSwitchState extends State<LiquidGlassSwitch>
     return Semantics(
       container: true,
       enabled: widget.enabled,
-      toggled: widget.value,
+      toggled: widget.value == LiquidGlassSwitchValue.dark,
+      value: widget.value.name,
       label: 'Liquid glass switch',
-      value: widget.value ? widget.rightFace.label : widget.leftFace.label,
       onTap: widget.enabled ? _onTap : null,
       child: GestureDetector(
         behavior: HitTestBehavior.translucent,
         onTap: widget.enabled ? _onTap : null,
+        onHorizontalDragStart: widget.enabled ? _onPanStart : null,
         onHorizontalDragUpdate: widget.enabled ? _onPanUpdate : null,
         onHorizontalDragEnd: widget.enabled ? _onPanEnd : null,
         child: AnimatedBuilder(
-          animation: _controller,
+          animation: Listenable.merge([_controller, _bounceController]),
           builder: (context, _) {
-            final rightSelected = _controller.value > 0.5;
-            final activeFace = rightSelected
-                ? widget.rightFace
-                : widget.leftFace;
-
-            final orbAlignment = Alignment(
-              lerpDouble(-1.0, 1.0, _controller.value)!,
+            final progress = _controller.value.clamp(0.0, 1.0);
+            final activeContent = _contentFromUnit(progress);
+            final tint = Color.lerp(
+              widget.content.left.tint,
+              widget.content.right.tint,
+              progress,
+            )!;
+            final baseOrbLeft = lerpDouble(_orbStartX, _orbEndX, progress)!;
+            final orbLeft = baseOrbLeft + _bounceOffset(progress);
+            final labelGap = math.max(12.0, _geometry.orbOverflow * 0.75);
+            final labelReservedWidth =
+                _geometry.effectiveLabelSafeZone + labelGap;
+            final labelSlotWidth = math.max(
               0.0,
+              _geometry.trackWidth -
+                  _geometry.labelPadding.horizontal -
+                  labelReservedWidth,
             );
-
-            final textAlignment = Alignment(
-              lerpDouble(1.0, -1.0, _controller.value)!,
-              0.0,
+            final labelFadeProgress = Curves.easeInOutCubic.transform(
+              ((progress - 0.15) / 0.7).clamp(0.0, 1.0),
             );
+            final leftLabelOpacity = labelFadeProgress;
+            final rightLabelOpacity = 1.0 - leftLabelOpacity;
+            final activeIconSize =
+                activeContent.iconSize ?? widget.style.orb.iconSize;
+            final activeIconColor =
+                activeContent.iconColor ?? widget.style.orb.iconColor;
 
-            final leftPadding = lerpDouble(88.0, 30.0, _controller.value)!;
-            final rightPadding = lerpDouble(30.0, 88.0, _controller.value)!;
+            Widget buildTrackLabel({
+              required ValueKey<String> opacityKey,
+              required Alignment alignment,
+              required LiquidGlassStateContent content,
+              required double opacity,
+            }) {
+              Widget labelChild = Text(
+                content.label,
+                textDirection: content.labelTextDirection,
+                style: widget.style.typography.textStyle.merge(
+                  content.labelStyle,
+                ),
+                maxLines: 1,
+                overflow: content.labelFit == LiquidGlassLabelFit.scaleDown
+                    ? TextOverflow.visible
+                    : TextOverflow.clip,
+                softWrap: false,
+              );
+
+              if (content.labelFit == LiquidGlassLabelFit.scaleDown) {
+                labelChild = FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: alignment,
+                  child: labelChild,
+                );
+              }
+
+              return Opacity(
+                key: opacityKey,
+                opacity: opacity,
+                child: ClipRect(
+                  child: SizedBox.expand(
+                    child: Align(alignment: alignment, child: labelChild),
+                  ),
+                ),
+              );
+            }
 
             return Opacity(
-              opacity: widget.enabled ? 1.0 : 0.72,
+              opacity: widget.enabled ? 1.0 : 0.1,
               child: SizedBox(
-                width: widget.width,
-                height: _switchHeight,
+                width: _geometry.totalWidth,
+                height: _geometry.totalHeight,
                 child: Stack(
-                  alignment: Alignment.center,
                   clipBehavior: Clip.none,
                   children: [
                     Positioned(
-                      top: 23,
+                      left: _geometry.orbOverflow,
+                      top: _geometry.trackTop,
                       child: _GlassTrack(
-                        width: widget.width,
-                        height: _trackHeight,
-                        shader: _trackShader,
-                        tint: activeFace.tint,
-                        child: Align(
-                          alignment: textAlignment,
-                          child: Padding(
-                            padding: EdgeInsets.only(
-                              left: leftPadding,
-                              right: rightPadding,
-                            ),
-                            child: AnimatedSwitcher(
-                              duration: widget.motion.duration,
-                              transitionBuilder: (child, animation) {
-                                return FadeTransition(
-                                  opacity: animation,
-                                  child: ScaleTransition(
-                                    scale: Tween<double>(begin: 0.97, end: 1.0)
-                                        .animate(
-                                          CurvedAnimation(
-                                            parent: animation,
-                                            curve: Curves.easeOutCubic,
-                                          ),
-                                        ),
-                                    child: child,
-                                  ),
-                                );
-                              },
-                              child: Text(
-                                activeFace.label,
-                                key: ValueKey(activeFace.label),
-                                style: TextStyle(
-                                  color: Colors.white.withValues(alpha: 0.95),
-                                  fontSize: 24,
-                                  fontWeight: FontWeight.w400,
-                                  letterSpacing: -0.6,
-                                  height: 1,
+                        width: _geometry.trackWidth,
+                        height: _geometry.trackHeight,
+                        style: widget.style,
+                        child: Stack(
+                          key: _labelSlotKey,
+                          children: [
+                            Positioned(
+                              left: _geometry.labelPadding.left,
+                              top: 0,
+                              bottom: 0,
+                              width: labelSlotWidth,
+                              child: SizedBox(
+                                key: _leftLabelSlotKey,
+                                width: labelSlotWidth,
+                                child: buildTrackLabel(
+                                  opacityKey: _leftLabelOpacityKey,
+                                  alignment: Alignment.centerLeft,
+                                  content: widget.content.right,
+                                  opacity: leftLabelOpacity,
                                 ),
                               ),
                             ),
-                          ),
+                            Positioned(
+                              right: _geometry.labelPadding.right,
+                              top: 0,
+                              bottom: 0,
+                              width: labelSlotWidth,
+                              child: SizedBox(
+                                key: _rightLabelSlotKey,
+                                width: labelSlotWidth,
+                                child: buildTrackLabel(
+                                  opacityKey: _rightLabelOpacityKey,
+                                  alignment: Alignment.centerRight,
+                                  content: widget.content.left,
+                                  opacity: rightLabelOpacity,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ),
-                    Align(
-                      alignment: orbAlignment,
+                    Positioned(
+                      key: _orbSlotKey,
+                      left: orbLeft,
+                      top: _geometry.orbTop,
                       child: _GlassOrb(
-                        size: _orbSize,
+                        width: _geometry.orbWidth,
+                        height: _geometry.orbHeight,
                         shader: _orbShader,
-                        tint: activeFace.tint,
+                        tint: tint,
+                        stateProgress: progress,
+                        style: widget.style,
+                        iconGlow: activeContent.iconGlow,
                         child: AnimatedSwitcher(
-                          duration: widget.motion.duration,
+                          duration: widget.motion.contentDuration,
                           transitionBuilder: (child, animation) {
                             return FadeTransition(
                               opacity: animation,
                               child: ScaleTransition(
-                                scale: Tween<double>(begin: 0.92, end: 1.0)
-                                    .animate(
-                                      CurvedAnimation(
-                                        parent: animation,
-                                        curve: Curves.easeOutCubic,
-                                      ),
-                                    ),
+                                scale: Tween<double>(
+                                  begin: 0.92,
+                                  end: 1.2,
+                                ).animate(animation),
                                 child: child,
                               ),
                             );
                           },
+
                           child: Icon(
-                            activeFace.icon,
-                            key: ValueKey(activeFace.icon),
-                            size: 34,
-                            color: Colors.white.withValues(alpha: 0.98),
+                            key: ValueKey<String>(
+                              '${activeContent.icon.codePoint}'
+                              '-${activeIconSize.toStringAsFixed(2)}'
+                              '-${activeIconColor.toARGB32()}',
+                            ),
+                            activeContent.icon,
+                            size: activeIconSize,
+                            color: activeIconColor,
                           ),
                         ),
                       ),
@@ -328,231 +463,4 @@ class _LiquidGlassSwitchState extends State<LiquidGlassSwitch>
       ),
     );
   }
-}
-
-class _GlassTrack extends StatelessWidget {
-  const _GlassTrack({
-    required this.width,
-    required this.height,
-    required this.shader,
-    required this.tint,
-    required this.child,
-  });
-
-  final double width;
-  final double height;
-  final FragmentShader? shader;
-  final Color tint;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    final radius = BorderRadius.circular(height / 2);
-
-    return ClipRRect(
-      borderRadius: radius,
-      child: Stack(
-        children: [
-          SizedBox(
-            width: width,
-            height: height,
-            child: shader == null
-                ? BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-                    child: const SizedBox.expand(),
-                  )
-                : Builder(
-                    builder: (context) {
-                      final s = shader!;
-                      _setShaderUniforms(
-                        shader: s,
-                        tint: tint,
-                        distortion: 11.0,
-                        edgeBoost: 0.42,
-                        lightX: 0.28,
-                        lightY: 0.16,
-                      );
-                      return BackdropFilter(
-                        filter: ImageFilter.shader(s),
-                        child: const SizedBox.expand(),
-                      );
-                    },
-                  ),
-          ),
-          Positioned.fill(
-            child: IgnorePointer(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  borderRadius: radius,
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [
-                      Colors.white.withValues(alpha: 0.10),
-                      Colors.white.withValues(alpha: 0.05),
-                      Colors.white.withValues(alpha: 0.025),
-                    ],
-                  ),
-                  border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.24),
-                    width: 1.0,
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.10),
-                      blurRadius: 18,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          Positioned(
-            top: 6,
-            left: 18,
-            right: 18,
-            child: IgnorePointer(
-              child: Container(
-                height: 15,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(999),
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [
-                      Colors.white.withValues(alpha: 0.18),
-                      Colors.white.withValues(alpha: 0.02),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-          Positioned.fill(child: child),
-        ],
-      ),
-    );
-  }
-}
-
-class _GlassOrb extends StatelessWidget {
-  const _GlassOrb({
-    required this.size,
-    required this.shader,
-    required this.tint,
-    required this.child,
-  });
-
-  final double size;
-  final FragmentShader? shader;
-  final Color tint;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    return ClipOval(
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          SizedBox(
-            width: size,
-            height: size,
-            child: shader == null
-                ? BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-                    child: const SizedBox.expand(),
-                  )
-                : Builder(
-                    builder: (context) {
-                      final s = shader!;
-                      _setShaderUniforms(
-                        shader: s,
-                        tint: tint,
-                        distortion: 26.0,
-                        edgeBoost: 0.85,
-                        lightX: 0.35,
-                        lightY: 0.20,
-                      );
-                      return BackdropFilter(
-                        filter: ImageFilter.shader(s),
-                        child: const SizedBox.expand(),
-                      );
-                    },
-                  ),
-          ),
-          Positioned.fill(
-            child: IgnorePointer(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: RadialGradient(
-                    center: const Alignment(-0.25, -0.25),
-                    radius: 1.05,
-                    colors: [
-                      Colors.white.withValues(alpha: 0.20),
-                      Colors.white.withValues(alpha: 0.04),
-                      Colors.black.withValues(alpha: 0.35),
-                    ],
-                    stops: const [0.0, 0.45, 1.0],
-                  ),
-                  border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.18),
-                    width: 1.0,
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.22),
-                      blurRadius: 16,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          Positioned(
-            top: 4,
-            left: 12,
-            right: 12,
-            child: IgnorePointer(
-              child: Container(
-                height: 18,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(999),
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [
-                      Colors.white.withValues(alpha: 0.45),
-                      Colors.white.withValues(alpha: 0.01),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-          child,
-        ],
-      ),
-    );
-  }
-}
-
-void _setShaderUniforms({
-  required FragmentShader shader,
-  required Color tint,
-  required double distortion,
-  required double edgeBoost,
-  required double lightX,
-  required double lightY,
-}) {
-  shader.setFloat(0, distortion);
-  shader.setFloat(1, edgeBoost);
-  shader.setFloat(2, lightX);
-  shader.setFloat(3, lightY);
-  shader.setFloat(4, tint.r);
-  shader.setFloat(5, tint.g);
-  shader.setFloat(6, tint.b);
-  shader.setFloat(7, tint.a);
 }
